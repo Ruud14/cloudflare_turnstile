@@ -12,102 +12,171 @@ import 'package:cloudflare_turnstile/src/widget/turnstile_options.dart';
 import 'package:flutter/material.dart';
 import 'package:web/web.dart' as web;
 
-class _DartTurnstile {
-  const _DartTurnstile({
-    this.onTokenReceived,
-    this.onTokenExpired,
-    this.onErrorCallback,
-    this.onLoaded,
+/// Source of Cloudflare's Turnstile script. Loaded with `render=explicit`
+/// and WITHOUT an `onload=` callback: rendering is driven per widget
+/// instance, so no one-shot global ready callback is needed (or can be
+/// overwritten by another instance).
+const String _turnstileScriptSrc =
+    'https://challenges.cloudflare.com/turnstile/v0/api.js';
+
+/// Cached script load shared by every widget instance, so the script is
+/// injected at most once per page. Reset to `null` on failure so a later
+/// widget can retry the load instead of failing forever.
+Completer<void>? _scriptLoaderCompleter;
+
+/// Whether Cloudflare's `window.turnstile` runtime is available.
+bool _isTurnstileRuntimeReady() =>
+    web.window.hasProperty('turnstile'.toJS).toDart;
+
+/// Ensures Cloudflare's `api.js` is loaded and `window.turnstile` is
+/// defined before completing.
+///
+/// Idempotent: concurrent and repeated callers share a single in-flight
+/// load, and the script tag is injected at most once - even when a tag
+/// already exists from a previous page state (e.g. a hot restart). This
+/// prevents the "Turnstile already has been loaded" double-injection.
+Future<void> _ensureTurnstileScriptLoaded() {
+  final existing = _scriptLoaderCompleter;
+  if (existing != null) return existing.future;
+
+  final completer = Completer<void>();
+  _scriptLoaderCompleter = completer;
+
+  if (_isTurnstileRuntimeReady()) {
+    completer.complete();
+    return completer.future;
+  }
+
+  // Reuse a script tag injected earlier (by a previous instance or before
+  // a hot restart); only inject when none exists.
+  const selector = 'script[src^="$_turnstileScriptSrc"]';
+  if (web.document.querySelector(selector) == null) {
+    final script = web.HTMLScriptElement()
+      ..id = 'turnstile-script'
+      ..async = true
+      ..defer = true
+      ..src = '$_turnstileScriptSrc?render=explicit';
+    web.document.head?.append(script);
+  }
+
+  // The script's `load` event can fire just before `window.turnstile` is
+  // defined, and a reused tag may have fired it already - so poll for the
+  // runtime instead of trusting load events.
+  var waited = Duration.zero;
+  const pollInterval = Duration(milliseconds: 50);
+  const loadTimeout = Duration(milliseconds: 8000);
+  Timer.periodic(pollInterval, (timer) {
+    if (completer.isCompleted) {
+      timer.cancel();
+      return;
+    }
+    if (_isTurnstileRuntimeReady()) {
+      timer.cancel();
+      completer.complete();
+      return;
+    }
+    waited += pollInterval;
+    if (waited >= loadTimeout) {
+      timer.cancel();
+      _scriptLoaderCompleter = null;
+      completer.completeError(
+        TimeoutException('Turnstile api.js failed to load.', loadTimeout),
+      );
+    }
   });
 
-  final i.OnTokenReceived? onTokenReceived;
-  final i.OnTokenExpired? onTokenExpired;
-  final i.OnError? onErrorCallback;
-  final Function()? onLoaded;
+  return completer.future;
+}
 
-  @JSExport('onTokenReceived')
-  void onReceived(JSString token) {
-    onTokenReceived?.call(token.toDart);
+@JS('turnstile.render')
+external JSString? _renderTurnstile(web.Element element, JSObject params);
+
+@JS('turnstile.remove')
+external void _removeTurnstile(JSString widgetId);
+
+/// Deregisters a rendered widget from Cloudflare's runtime before its DOM
+/// node is removed. Without this, the runtime keeps polling a dead widget
+/// and logs "Cannot find Widget cf-chl-widget-..." / "seem to have hung".
+/// Safe for ids the runtime no longer tracks (Cloudflare throws for those).
+void _safeRemoveTurnstileWidget(String? widgetId) {
+  if (widgetId == null || widgetId.isEmpty) return;
+  try {
+    _removeTurnstile(widgetId.toJS);
+  } on Object catch (_) {
+    // Already removed or never tracked - nothing to clean up.
   }
+}
 
-  @JSExport('onTokenExpired')
-  void onExpired() {
-    onTokenExpired?.call();
+/// Creates the bare container element a Turnstile widget renders into.
+/// All widget configuration travels through the `turnstile.render` params
+/// object, so no `data-*` attributes are needed here.
+web.HTMLDivElement _buildContainer(String className) => web.HTMLDivElement()
+  ..style.width = '100%'
+  ..style.height = '100%'
+  ..className = className;
+
+/// Builds the options object passed to `turnstile.render`.
+///
+/// Callbacks are real per-instance JS functions instead of names of
+/// globals, so concurrently existing (or orphaned) widgets can never
+/// receive each other's events - the cause of cross-instance state
+/// corruption and spurious 300xxx errors in earlier versions.
+JSObject _buildRenderParams({
+  required String siteKey,
+  required TurnstileOptions options,
+  required JSFunction onToken,
+  required JSFunction onError,
+  String? action,
+  String? cData,
+  String? appearance,
+  JSFunction? onTokenExpired,
+  JSFunction? onTimeout,
+  JSFunction? onBeforeInteractive,
+}) {
+  final retry = options.retryAutomatically ? 'auto' : 'never';
+  final params = JSObject()
+    ..setProperty('sitekey'.toJS, siteKey.toJS)
+    ..setProperty('theme'.toJS, options.theme.name.toJS)
+    ..setProperty('size'.toJS, options.size.name.toJS)
+    ..setProperty('language'.toJS, options.language.toJS)
+    ..setProperty('retry'.toJS, retry.toJS)
+    ..setProperty(
+      'retry-interval'.toJS,
+      options.retryInterval.inMilliseconds.toJS,
+    )
+    ..setProperty('refresh-expired'.toJS, options.refreshExpired.name.toJS)
+    ..setProperty('refresh-timeout'.toJS, options.refreshTimeout.name.toJS)
+    ..setProperty('feedback-enabled'.toJS, false.toJS)
+    ..setProperty('callback'.toJS, onToken)
+    ..setProperty('error-callback'.toJS, onError);
+  if (action != null && action.isNotEmpty) {
+    params.setProperty('action'.toJS, action.toJS);
   }
-
-  @JSExport('onTokenError')
-  void onError(JSString code) {
-    final errorCode = int.tryParse(code.toDart) ?? -1;
-    onErrorCallback?.call(TurnstileException.fromCode(errorCode));
+  if (cData != null && cData.isNotEmpty) {
+    params.setProperty('cData'.toJS, cData.toJS);
   }
-
-  @JSExport('onTurnstileReady')
-  void onReady() {
-    onLoaded?.call();
+  if (appearance != null) {
+    params.setProperty('appearance'.toJS, appearance.toJS);
   }
-
-  bool isScriptLoaded() => web.window.hasProperty('turnstile'.toJS).toDart;
-
-  void loadScript() {
-    if (!isScriptLoaded()) {
-      final mainScript = web.HTMLScriptElement()
-        ..id = 'turnstile-script'
-        ..async = true
-        ..defer = true
-        ..src =
-            'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&onload=onTurnstileReady';
-
-      web.document.head?.append(mainScript);
-    }
+  if (onTokenExpired != null) {
+    params.setProperty('expired-callback'.toJS, onTokenExpired);
   }
-
-  web.HTMLDivElement buildWidget({
-    required String siteKey,
-    required TurnstileOptions options,
-    String? action,
-    String? cData,
-  }) {
-    final widget = web.HTMLDivElement()
-      ..style.width = '100%'
-      ..style.height = '100%'
-      ..setAttribute('data-sitekey', siteKey)
-      ..setAttribute('data-theme', options.theme.name)
-      ..setAttribute('data-size', options.size.name)
-      ..setAttribute('data-language', options.language)
-      ..setAttribute(
-        'data-retry',
-        options.retryAutomatically ? 'auto' : 'never',
-      )
-      ..setAttribute(
-        'data-retry-interval',
-        options.retryInterval.inMilliseconds.toString(),
-      )
-      ..setAttribute('data-refresh-expired', options.refreshExpired.name)
-      ..setAttribute('data-refresh-timeout', options.refreshTimeout.name)
-      ..setAttribute('data-feedback-enabled', 'false')
-      ..setAttribute('data-callback', 'onTokenReceived')
-      ..setAttribute('data-expired-callback', 'onTokenExpired')
-      ..setAttribute('data-error-callback', 'onTurnstileError');
-
-    if (action != null && action.isNotEmpty) {
-      widget.setAttribute('data-action', action);
-    }
-
-    if (cData != null && cData.isNotEmpty) {
-      widget.setAttribute('data-cdata', cData);
-    }
-
-    return widget;
+  if (onTimeout != null) {
+    params.setProperty('timeout-callback'.toJS, onTimeout);
   }
+  if (onBeforeInteractive != null) {
+    params.setProperty(
+      'before-interactive-callback'.toJS,
+      onBeforeInteractive,
+    );
+  }
+  return params;
 }
 
 String _createViewType() {
   final widgetId = '_${DateTime.now().microsecondsSinceEpoch}';
   return '_turnstile_$widgetId';
 }
-
-@JS('turnstile.render')
-external String? _renderWidget(String target);
 
 /// Cloudflare Turnstile web implementation
 class CloudflareTurnstile extends StatefulWidget
@@ -393,13 +462,13 @@ class CloudflareTurnstile extends StatefulWidget
 class _CloudflareTurnstileState extends State<CloudflareTurnstile> {
   late web.HTMLDivElement _widget;
   late String _widgetViewId;
-  late _DartTurnstile _turnstile;
 
   String? widgetId;
 
   bool _isWidgetReady = false;
   TurnstileException? _hasError;
   Timer? _scriptLoadTimer;
+  Timer? _domAttachTimer;
   bool _isDisposed = false;
   bool _viewCreated = false;
 
@@ -414,63 +483,105 @@ class _CloudflareTurnstileState extends State<CloudflareTurnstile> {
     });
 
     _widgetViewId = _createViewType();
-    _turnstile = _DartTurnstile(
-      onTokenReceived: (String token) {
-        if (_isDisposed) return;
-        widget.onTokenReceived?.call(token);
-        widget.controller?.token = token;
-      },
-      onTokenExpired: () {
-        if (_isDisposed) return;
-        widget.onTokenExpired?.call();
-      },
-      onErrorCallback: _addError,
-      onLoaded: _onTurnstileLoaded,
-    );
-
-    // Assign the Dart methods to the global JS object
-    // Use 'globalContext' from dart:js_interop_unsafe
-    globalContext
-      ..setProperty(
-        'onTokenReceived'.toJS,
-        _turnstile.onReceived.toJS,
-      )
-      ..setProperty(
-        'onTokenExpired'.toJS,
-        _turnstile.onExpired.toJS,
-      )
-      ..setProperty(
-        'onTurnstileError'.toJS,
-        _turnstile.onError.toJS,
-      )
-      ..setProperty(
-        'onTurnstileReady'.toJS,
-        _turnstile.onReady.toJS,
-      );
-
-    _widget = _turnstile.buildWidget(
-      siteKey: widget.siteKey,
-      options: widget.options,
-      cData: widget.cData,
-      action: widget.action,
-    )..className = 'cf-turnstile_$_widgetViewId';
-
+    _widget = _buildContainer('cf-turnstile_$_widgetViewId');
     _registerView(_widgetViewId);
   }
 
-  void _onTurnstileLoaded() {
-    if (_isDisposed || !mounted) return;
-    // Only render if the view has been created in the DOM
-    if (_viewCreated) {
-      _renderTurnstileWidget();
+  /// Awaits the shared script load, then renders once the container is
+  /// actually attached to the document. Rendering into a detached node
+  /// leaves an iframe that never paints (a blank widget), so attachment
+  /// is verified before calling `turnstile.render`.
+  Future<void> _loadAndRender() async {
+    try {
+      await _ensureTurnstileScriptLoaded();
+    } on Object catch (_) {
+      if (_isDisposed || !mounted) return;
+      _addError(
+        const TurnstileException('Failed to load the Turnstile script.'),
+      );
+      return;
     }
+    if (_isDisposed || !mounted || !_viewCreated) return;
+
+    if (_widget.isConnected) {
+      _renderTurnstileWidget();
+      return;
+    }
+
+    var waited = Duration.zero;
+    const pollInterval = Duration(milliseconds: 50);
+    const attachTimeout = Duration(milliseconds: 1500);
+    _domAttachTimer?.cancel();
+    _domAttachTimer = Timer.periodic(pollInterval, (timer) {
+      if (_isDisposed || !mounted) {
+        timer.cancel();
+        return;
+      }
+      if (_widget.isConnected) {
+        timer.cancel();
+        _renderTurnstileWidget();
+        return;
+      }
+      waited += pollInterval;
+      if (waited >= attachTimeout) {
+        timer.cancel();
+        _addError(
+          const TurnstileException('Failed to render the Turnstile widget.'),
+        );
+      }
+    });
   }
 
   void _renderTurnstileWidget() {
     if (_isDisposed || !mounted) return;
     if (widgetId != null) return; // Already rendered
 
-    widgetId = _renderWidget('.cf-turnstile_$_widgetViewId');
+    final params = _buildRenderParams(
+      siteKey: widget.siteKey,
+      options: widget.options,
+      action: widget.action,
+      cData: widget.cData,
+      onToken: ((JSString token) {
+        if (_isDisposed) return;
+        widget.onTokenReceived?.call(token.toDart);
+        widget.controller?.token = token.toDart;
+      }).toJS,
+      // Deliberately returns nothing: Cloudflare then still logs the error
+      // code to the browser console (where console-capture tooling like
+      // PostHog picks it up) in addition to the [_addError] path here.
+      onError: ((JSString code) {
+        if (!_isDisposed && mounted) {
+          final errorCode = int.tryParse(code.toDart) ?? -1;
+          _addError(TurnstileException.fromCode(errorCode));
+        }
+      }).toJS,
+      onTokenExpired: (() {
+        if (_isDisposed) return;
+        widget.onTokenExpired?.call();
+      }).toJS,
+      onTimeout: (() {
+        if (_isDisposed) return;
+        widget.onTimeout?.call();
+      }).toJS,
+    );
+
+    JSString? renderedId;
+    try {
+      renderedId = _renderTurnstile(_widget, params);
+    } on Object catch (_) {
+      renderedId = null;
+    }
+
+    // A failed render previously still marked the widget ready, leaving
+    // an opaque empty box. Surface it as a (non-retryable) error instead.
+    if (renderedId == null || renderedId.toDart.isEmpty) {
+      _addError(
+        const TurnstileException('Failed to render the Turnstile widget.'),
+      );
+      return;
+    }
+
+    widgetId = renderedId.toDart;
     widget.controller?.widgetId = widgetId;
     if (mounted) {
       setState(() => _isWidgetReady = true);
@@ -521,14 +632,7 @@ class _CloudflareTurnstileState extends State<CloudflareTurnstile> {
         }
       });
 
-      // If script is already loaded, render the widget now
-      if (_turnstile.isScriptLoaded()) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          _renderTurnstileWidget();
-        });
-      } else {
-        _turnstile.loadScript();
-      }
+      unawaited(_loadAndRender());
     },
   );
 
@@ -537,6 +641,12 @@ class _CloudflareTurnstileState extends State<CloudflareTurnstile> {
     _isDisposed = true;
     _scriptLoadTimer?.cancel();
     _scriptLoadTimer = null;
+    _domAttachTimer?.cancel();
+    _domAttachTimer = null;
+    // Deregister from Cloudflare's runtime BEFORE removing the DOM node,
+    // otherwise the runtime keeps tracking an orphaned widget.
+    _safeRemoveTurnstileWidget(widgetId);
+    widgetId = null;
     _widget.remove();
     super.dispose();
   }
@@ -602,79 +712,146 @@ class _TurnstileInvisible extends CloudflareTurnstile {
     _register();
   }
 
+  late web.HTMLDivElement _widget;
+  late String _iframeViewType;
+  Completer<String?>? _completer;
+  Timer? _scriptLoadTimer;
+  Timer? _tokenWaitTimer;
+  bool _isDisposed = false;
+
   void _register() {
     _iframeViewType = _createViewType();
-    final turnstile = _DartTurnstile(
-      onTokenReceived: (String token) {
-        controller?.token = token;
-        onTokenReceived?.call(token);
-        if (_completer != null && !_completer!.isCompleted) {
-          _completer?.complete(token);
-        }
-      },
-      onTokenExpired: () {
-        onTokenExpired?.call();
-        if (!_completer!.isCompleted) {
-          _completer?.complete(null);
-        }
-      },
-      onErrorCallback: (TurnstileException error) {
-        controller?.error = error;
-        if (!_completer!.isCompleted) {
-          _completer?.completeError(error);
-        }
-      },
-      onLoaded: () {
-        controller?.widgetId = _renderWidget('.cf-turnstile_$_iframeViewType');
-        controller?.isWidgetReady = true;
-        _scriptLoadTimer?.cancel();
-      },
-    );
-
-    globalContext
-      ..setProperty(
-        'onTokenReceived'.toJS,
-        turnstile.onReceived.toJS,
-      )
-      ..setProperty(
-        'onTokenExpired'.toJS,
-        turnstile.onExpired.toJS,
-      )
-      ..setProperty(
-        'onTurnstileError'.toJS,
-        turnstile.onError.toJS,
-      )
-      ..setProperty(
-        'onTurnstileReady'.toJS,
-        turnstile.onReady.toJS,
-      );
-
-    _widget = turnstile.buildWidget(
-      siteKey: siteKey,
-      options: options,
-      cData: cData,
-      action: action,
-    )..className = 'cf-turnstile_$_iframeViewType';
+    _widget = _buildContainer('cf-turnstile_$_iframeViewType')
+      // Off-screen and non-interfering. NOT `display:none`, which would
+      // prevent Cloudflare from running the challenge at all.
+      ..style.position = 'fixed'
+      ..style.bottom = '0'
+      ..style.left = '0'
+      ..style.width = '0'
+      ..style.height = '0'
+      ..style.overflow = 'hidden';
 
     web.document.body?.append(_widget);
+
     _scriptLoadTimer?.cancel();
     _scriptLoadTimer = Timer(const Duration(milliseconds: 8000), () {
       if (controller?.isWidgetReady != true) {
         onTimeout?.call();
+        // Unblock any pending getToken() call - previously this timed out
+        // without completing the completer, hanging the returned future.
+        _completeToken(null);
       }
     });
-    turnstile.loadScript();
 
-    if (turnstile.isScriptLoaded()) {
-      controller?.widgetId = _renderWidget('.cf-turnstile_$_iframeViewType');
-      controller?.isWidgetReady = true;
+    unawaited(_bootstrap());
+  }
+
+  Future<void> _bootstrap() async {
+    try {
+      await _ensureTurnstileScriptLoaded();
+    } on Object catch (_) {
+      if (_isDisposed) return;
+      onTimeout?.call();
+      _completeToken(null);
+      return;
+    }
+    if (_isDisposed) return;
+    _renderOnce();
+  }
+
+  void _renderOnce() {
+    if (_isDisposed) return;
+    final existingId = controller?.widgetId;
+    if (existingId != null && existingId.isNotEmpty) return;
+
+    final params = _buildRenderParams(
+      siteKey: siteKey,
+      options: options,
+      action: action,
+      cData: cData,
+      // Invisible usage never shows widget UI, so keep the widget hidden
+      // unless Cloudflare would require interaction.
+      appearance: 'interaction-only',
+      onToken: ((JSString token) {
+        if (_isDisposed) return;
+        controller?.token = token.toDart;
+        onTokenReceived?.call(token.toDart);
+        _completeToken(token.toDart);
+      }).toJS,
+      // Deliberately returns nothing: Cloudflare then still logs the error
+      // code to the browser console (where console-capture tooling like
+      // PostHog picks it up) in addition to the completer path here.
+      onError: ((JSString code) {
+        if (!_isDisposed) {
+          final errorCode = int.tryParse(code.toDart) ?? -1;
+          final error = TurnstileException.fromCode(errorCode);
+          controller?.error = error;
+          _completeTokenError(error);
+        }
+      }).toJS,
+      onTokenExpired: (() {
+        if (_isDisposed) return;
+        onTokenExpired?.call();
+        _completeToken(null);
+      }).toJS,
+      onTimeout: (() {
+        if (_isDisposed) return;
+        _completeToken(null);
+      }).toJS,
+      // A hidden widget can never satisfy an interactive challenge; fail
+      // fast so callers can fall back to a visible challenge right away
+      // instead of waiting for their own timeout.
+      onBeforeInteractive: (() {
+        if (_isDisposed) return;
+        _completeToken(null);
+      }).toJS,
+    );
+
+    JSString? renderedId;
+    try {
+      renderedId = _renderTurnstile(_widget, params);
+    } on Object catch (_) {
+      renderedId = null;
+    }
+
+    if (renderedId == null || renderedId.toDart.isEmpty) {
+      _completeTokenError(
+        const TurnstileException('Failed to render the Turnstile widget.'),
+      );
+      return;
+    }
+
+    controller?.widgetId = renderedId.toDart;
+    controller?.isWidgetReady = true;
+    _scriptLoadTimer?.cancel();
+  }
+
+  /// Completes a pending [getToken]/[refresh] call. Null-safe and
+  /// idempotent: safe to call when no call is pending or when the pending
+  /// call was already completed by another callback.
+  void _completeToken(String? token) {
+    final completer = _completer;
+    if (completer != null && !completer.isCompleted) {
+      completer.complete(token);
     }
   }
 
-  late web.HTMLDivElement _widget;
-  late String _iframeViewType;
-  Completer<dynamic>? _completer;
-  Timer? _scriptLoadTimer;
+  /// Error-completing variant of [_completeToken].
+  void _completeTokenError(TurnstileException error) {
+    final completer = _completer;
+    if (completer != null && !completer.isCompleted) {
+      completer.completeError(error);
+    }
+  }
+
+  /// Guards a pending token request so the returned future always
+  /// completes (with `null`) even if no Turnstile callback ever fires.
+  void _armTokenWaitGuard() {
+    _tokenWaitTimer?.cancel();
+    _tokenWaitTimer = Timer(const Duration(milliseconds: 8000), () {
+      _completeToken(null);
+    });
+  }
 
   @override
   Future<String?> getToken() async {
@@ -684,7 +861,9 @@ class _TurnstileInvisible extends CloudflareTurnstile {
       await controller?.refreshToken();
     }
 
-    return _completer!.future as Future<String?>;
+    _armTokenWaitGuard();
+
+    return _completer!.future;
   }
 
   @override
@@ -702,17 +881,14 @@ class _TurnstileInvisible extends CloudflareTurnstile {
     } else if (controller!.isWidgetReady) {
       _completer = Completer<String?>();
 
-      if (token != null) {
-        if (!await controller!.isExpired()) {
-          if (!_completer!.isCompleted) {
-            _completer?.complete(token);
-            return _completer!.future;
-          }
-        }
+      if (token != null && !await controller!.isExpired()) {
+        _completeToken(token);
+        return;
       }
 
+      _armTokenWaitGuard();
       await controller?.refreshToken();
-      return _completer!.future;
+      await _completer!.future;
     }
   }
 
@@ -721,7 +897,14 @@ class _TurnstileInvisible extends CloudflareTurnstile {
 
   @override
   Future<void> dispose() async {
+    _isDisposed = true;
     _scriptLoadTimer?.cancel();
+    _tokenWaitTimer?.cancel();
+    // Unblock any pending getToken() call before tearing down.
+    _completeToken(null);
+    // Deregister from Cloudflare's runtime BEFORE removing the DOM node,
+    // otherwise the runtime keeps tracking an orphaned widget.
+    _safeRemoveTurnstileWidget(controller?.widgetId);
     _widget.remove();
   }
 }
