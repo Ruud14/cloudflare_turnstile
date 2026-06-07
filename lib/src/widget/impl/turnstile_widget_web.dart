@@ -56,6 +56,21 @@ Future<void> _ensureTurnstileScriptLoaded() {
       ..async = true
       ..defer = true
       ..src = '$_turnstileScriptSrc?render=explicit';
+    // Fail fast when the script is blocked (offline, ad-blocker) instead
+    // of waiting out the poll timeout. The dead tag is removed so a later
+    // attempt injects a fresh one rather than polling a corpse.
+    script.addEventListener(
+      'error',
+      ((web.Event _) {
+        if (!completer.isCompleted) {
+          script.remove();
+          _scriptLoaderCompleter = null;
+          completer.completeError(
+            TimeoutException('Turnstile api.js failed to load.'),
+          );
+        }
+      }).toJS,
+    );
     web.document.head?.append(script);
   }
 

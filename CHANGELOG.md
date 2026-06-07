@@ -4,6 +4,7 @@
 * **Web:** Widget callbacks are passed to `turnstile.render()` as per-instance JS closures instead of shared global function names, so concurrently existing widgets can no longer receive each other's events (a cause of spurious 300xxx errors).
 * **Web:** A failed `turnstile.render()` no longer marks the widget as ready (which showed an opaque empty box); it now surfaces a non-retryable error through `onError`.
 * **Web:** Invisible `getToken()` can no longer hang forever: timeouts, errors, and disposal complete the pending future, and a hidden widget that would require user interaction now fails fast (`appearance: interaction-only` + `before-interactive-callback`) so callers can fall back to a visible challenge immediately.
+* **Web:** A blocked/failed `api.js` load (offline, ad-blocker) fails fast via the script tag's `error` event instead of waiting out the load timeout, and can be retried by a later widget.
 * **Web:** The invisible widget's container is now rendered off-screen (0x0, fixed) instead of as a 100%x100% element appended to `<body>`.
 * **Web:** Visible widgets only render once their container is attached to the document, preventing blank widgets rendered into detached nodes.
 
