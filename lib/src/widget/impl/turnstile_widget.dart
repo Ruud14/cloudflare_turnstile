@@ -659,6 +659,27 @@ class _CloudflareTurnstileState extends State<CloudflareTurnstile> {
 
     final isErrorResolvable = _hasError != null && _hasError!.retryable == true;
 
+    // On macOS, wrapping the WebView platform view in a ClipRRect / border
+    // overlay makes Flutter rasterize it into a non-interactive snapshot, so the
+    // captcha receives no mouse events and its checkbox can't be clicked. Render
+    // it as a bare, live native view instead. The Turnstile widget supplies its
+    // own rounded card, so dropping the outer clip/border is barely noticeable.
+    if (Platform.isMacOS) {
+      return Wrap(
+        children: [
+          Visibility(
+            visible: _hasError == null || isErrorResolvable,
+            maintainState: true,
+            child: SizedBox(
+              width: _isWidgetReady ? widget.options.size.width : 0,
+              height: _isWidgetReady ? widget.options.size.height : 0,
+              child: _view,
+            ),
+          ),
+        ],
+      );
+    }
+
     final turnstileWidget = Visibility(
       visible: _hasError == null || isErrorResolvable,
       maintainState: true,
