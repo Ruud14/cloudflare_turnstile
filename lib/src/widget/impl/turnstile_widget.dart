@@ -453,6 +453,21 @@ class _CloudflareTurnstileState extends State<CloudflareTurnstile> {
   bool _isRendered = false;
   Timer? _scriptLoadTimer;
 
+  /// Max times the webview is reloaded to recover from an error before giving
+  /// up. Turnstile already retries internally (retryAutomatically), so this
+  /// manual reload is a bounded last resort. Without a cap, a persistent error
+  /// reloads endlessly (challenge flickers "loading -> blank -> loading").
+  static const int _maxReloads = 2;
+
+  /// Recovery reloads performed since the last successful render. Deliberately
+  /// NOT reset in onLoadStart/_resetWidget so the cap survives across reloads
+  /// and the loop can terminate.
+  int _reloadAttempts = 0;
+
+  /// Guards against scheduling more than one reload per errored load;
+  /// onLoadResource fires once per subresource.
+  bool _reloadScheduled = false;
+
   @override
   void initState() {
     super.initState();
@@ -500,6 +515,7 @@ class _CloudflareTurnstileState extends State<CloudflareTurnstile> {
         handlerName: 'TurnstileToken',
         callback: (List<dynamic> args) {
           if (!mounted) return;
+          _reloadAttempts = 0;
           final token = args[0] as String;
           widget.controller?.token = token;
           widget.onTokenReceived?.call(token);
@@ -517,6 +533,7 @@ class _CloudflareTurnstileState extends State<CloudflareTurnstile> {
         handlerName: 'TurnstileWidgetId',
         callback: (List<dynamic> args) {
           if (!mounted) return;
+          _reloadAttempts = 0;
           widgetId = args[0] as String;
           widget.controller?.widgetId = widgetId;
           _isRendered = true;
@@ -570,10 +587,21 @@ class _CloudflareTurnstileState extends State<CloudflareTurnstile> {
     },
     onLoadStart: (controller, _) {
       _isTurnstileLoaded = false;
+      // A scheduled (re)load has started; allow the next one. _reloadAttempts
+      // is deliberately NOT reset here so the cap persists across reloads.
+      _reloadScheduled = false;
       _resetWidget();
     },
     onLoadResource: (controller, resource) {
-      if (_isTurnstileLoaded && _hasError != null) {
+      // Recover from a load error by reloading, but only a bounded number of
+      // times and at most once per load. Otherwise a persistent error reloads
+      // endlessly (challenge flickers "loading -> blank -> loading").
+      if (_isTurnstileLoaded &&
+          _hasError != null &&
+          !_reloadScheduled &&
+          _reloadAttempts < _maxReloads) {
+        _reloadScheduled = true;
+        _reloadAttempts++;
         controller.reload();
       }
     },
