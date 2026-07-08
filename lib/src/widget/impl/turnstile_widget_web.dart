@@ -181,10 +181,7 @@ JSObject _buildRenderParams({
     params.setProperty('timeout-callback'.toJS, onTimeout);
   }
   if (onBeforeInteractive != null) {
-    params.setProperty(
-      'before-interactive-callback'.toJS,
-      onBeforeInteractive,
-    );
+    params.setProperty('before-interactive-callback'.toJS, onBeforeInteractive);
   }
   return params;
 }
