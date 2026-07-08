@@ -625,7 +625,13 @@ class _CloudflareTurnstileState extends State<CloudflareTurnstile> {
       });
     },
     onConsoleMessage: (controller, consoleMessage) {},
-    onReceivedError: (controller, __, error) {
+    onReceivedError: (controller, request, error) {
+      dev.log(
+        'Network error ${error.type} (${error.description}) '
+        'while loading ${request.url}',
+        name: 'cloudflare_turnstile',
+        level: 900,
+      );
       if (error.type == WebResourceErrorType.CANNOT_CONNECT_TO_HOST) {
         return;
       }
@@ -771,7 +777,13 @@ class _TurnstileInvisible extends CloudflareTurnstile {
         controller?.isWidgetReady = true;
       },
       onConsoleMessage: (_, __) {},
-      onReceivedError: (_, __, error) {
+      onReceivedError: (_, request, error) {
+        dev.log(
+          'Network error ${error.type} (${error.description}) '
+          'while loading ${request.url}',
+          name: 'cloudflare_turnstile',
+          level: 900,
+        );
         if (error.type == WebResourceErrorType.CANNOT_CONNECT_TO_HOST) {
           return;
         }
