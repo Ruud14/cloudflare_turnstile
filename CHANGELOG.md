@@ -1,3 +1,6 @@
+## 3.8.0
+* Merged the 3.6.x web-implementation rewrite (3.6.3) and mobile network-error logging (3.6.6) with the upstream 3.7.x changes (immutable `TurnstileOptions`, centralized validation, decoupled controller, non-main-frame error filtering).
+
 ## 3.7.2
 * Fixed non-main-frame WebView errors being incorrectly surfaced.
 * Fixed Android example project Kotlin/Java JVM target mismatch.
@@ -9,6 +12,19 @@
 ## 3.7.0
 * Enhanced `TurnstileOptions` immutability and centralized validations.
 * Decoupled controller interface for improved flexibility.
+
+## 3.6.6
+* **Mobile:** `onReceivedError` now logs the failing request URL alongside the error type and description (`name: 'cloudflare_turnstile'`), so network failures like `net::ERR_NAME_NOT_RESOLVED` can be traced to the exact host (e.g. the main challenge domain vs a Private Access Token issuer).
+
+## 3.6.3
+* **Web:** Fixed the Cloudflare script being injected multiple times when widgets raced an in-flight load ("Turnstile already has been loaded"). All widgets now share a single cached, idempotent script load (no `onload=` global), which also fixes widgets failing to render on remount (#39).
+* **Web:** Widgets are now deregistered from Cloudflare's runtime via `turnstile.remove()` on dispose, fixing "Cannot find Widget cf-chl-widget-..." and "Turnstile Widget seem to have hung" errors caused by orphaned widgets.
+* **Web:** Widget callbacks are passed to `turnstile.render()` as per-instance JS closures instead of shared global function names, so concurrently existing widgets can no longer receive each other's events (a cause of spurious 300xxx errors).
+* **Web:** A failed `turnstile.render()` no longer marks the widget as ready (which showed an opaque empty box); it now surfaces a non-retryable error through `onError`.
+* **Web:** Invisible `getToken()` can no longer hang forever: timeouts, errors, and disposal complete the pending future, and a hidden widget that would require user interaction now fails fast (`appearance: interaction-only` + `before-interactive-callback`) so callers can fall back to a visible challenge immediately.
+* **Web:** A blocked/failed `api.js` load (offline, ad-blocker) fails fast via the script tag's `error` event instead of waiting out the load timeout, and can be retried by a later widget.
+* **Web:** The invisible widget's container is now rendered off-screen (0x0, fixed) instead of as a 100%x100% element appended to `<body>`.
+* **Web:** Visible widgets only render once their container is attached to the document, preventing blank widgets rendered into detached nodes.
 
 ## 3.6.2
 * Fixed Windows widget lifecycle issues.

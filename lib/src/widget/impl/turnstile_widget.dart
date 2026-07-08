@@ -603,6 +603,12 @@ class _CloudflareTurnstileState extends State<CloudflareTurnstile> {
     },
     onConsoleMessage: (controller, consoleMessage) {},
     onReceivedError: (controller, request, error) {
+      dev.log(
+        'Network error ${error.type} (${error.description}) '
+        'while loading ${request.url}',
+        name: 'cloudflare_turnstile',
+        level: 900,
+      );
       if (request.isForMainFrame == false) {
         return;
       }
@@ -636,6 +642,27 @@ class _CloudflareTurnstileState extends State<CloudflareTurnstile> {
         : Colors.transparent;
 
     final isErrorResolvable = _hasError != null && _hasError!.retryable == true;
+
+    // On macOS, wrapping the WebView platform view in a ClipRRect / border
+    // overlay makes Flutter rasterize it into a non-interactive snapshot, so the
+    // captcha receives no mouse events and its checkbox can't be clicked. Render
+    // it as a bare, live native view instead. The Turnstile widget supplies its
+    // own rounded card, so dropping the outer clip/border is barely noticeable.
+    if (Platform.isMacOS) {
+      return Wrap(
+        children: [
+          Visibility(
+            visible: _hasError == null || isErrorResolvable,
+            maintainState: true,
+            child: SizedBox(
+              width: _isWidgetReady ? widget.options.size.width : 0,
+              height: _isWidgetReady ? widget.options.size.height : 0,
+              child: _view,
+            ),
+          ),
+        ],
+      );
+    }
 
     final turnstileWidget = Visibility(
       visible: _hasError == null || isErrorResolvable,
@@ -722,6 +749,12 @@ class _TurnstileInvisible extends CloudflareTurnstile {
       },
       onConsoleMessage: (_, __) {},
       onReceivedError: (_, request, error) {
+        dev.log(
+          'Network error ${error.type} (${error.description}) '
+          'while loading ${request.url}',
+          name: 'cloudflare_turnstile',
+          level: 900,
+        );
         if (request.isForMainFrame == false) {
           return;
         }
