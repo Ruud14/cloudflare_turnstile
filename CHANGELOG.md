@@ -1,3 +1,6 @@
+## 3.6.6
+* **Mobile:** `onReceivedError` now logs the failing request URL alongside the error type and description (`name: 'cloudflare_turnstile'`), so network failures like `net::ERR_NAME_NOT_RESOLVED` can be traced to the exact host (e.g. the main challenge domain vs a Private Access Token issuer).
+
 ## 3.6.3
 * **Web:** Fixed the Cloudflare script being injected multiple times when widgets raced an in-flight load ("Turnstile already has been loaded"). All widgets now share a single cached, idempotent script load (no `onload=` global), which also fixes widgets failing to render on remount (#39).
 * **Web:** Widgets are now deregistered from Cloudflare's runtime via `turnstile.remove()` on dispose, fixing "Cannot find Widget cf-chl-widget-..." and "Turnstile Widget seem to have hung" errors caused by orphaned widgets.
