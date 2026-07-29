@@ -566,8 +566,10 @@ class _CloudflareTurnstileState extends State<CloudflareTurnstile> {
     setState(() {});
   }
 
+  final _keepAlive = InAppWebViewKeepAlive();
+
   late final _view = InAppWebView(
-    keepAlive: InAppWebViewKeepAlive(),
+    keepAlive: _keepAlive,
     key: webViewKey,
     initialData: _servesPageByInterception
         ? null
@@ -663,6 +665,7 @@ class _CloudflareTurnstileState extends State<CloudflareTurnstile> {
   void dispose() {
     super.dispose();
     _scriptLoadTimer?.cancel();
+    InAppWebViewController.disposeKeepAlive(_keepAlive).ignore();
   }
 
   @override
