@@ -922,6 +922,13 @@ class _TurnstileInvisible extends CloudflareTurnstile {
   @override
   Future<void> dispose() async {
     _scriptLoadTimer?.cancel();
+    // flutter_inappwebview_windows answers the JavaScript handler call that
+    // delivered the token on the webview itself, and crashes the app when the
+    // webview is gone by then. Its reply is already queued, so a short wait
+    // lets it land first.
+    if (Platform.isWindows) {
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    }
     await _view.dispose();
   }
 }
