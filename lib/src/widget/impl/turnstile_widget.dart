@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:developer' as dev;
 import 'dart:io';
 
@@ -78,6 +79,37 @@ const String _source = """
 </html>
 
 """;
+
+/// WebView2 loads data through NavigateToString, which ignores the base url and
+/// leaves the page on about:blank, a hostname Turnstile rejects with 110200.
+/// On Windows the webview navigates to the base url instead, and
+/// [_pageForRequest] answers that request with the page.
+final bool _servesPageByInterception = Platform.isWindows;
+
+/// The Turnstile page [data] when [request] is the navigation to [baseUrl],
+/// null for every other request, which then loads as usual.
+Future<WebResourceResponse?> _pageForRequest(
+  WebResourceRequest request,
+  String baseUrl,
+  String data,
+) async {
+  final page = Uri.parse(baseUrl);
+  final requested = request.url;
+  String pathOf(Uri uri) => uri.path.isEmpty ? '/' : uri.path;
+  if (requested.scheme != page.scheme ||
+      requested.host != page.host ||
+      requested.port != page.port ||
+      pathOf(requested) != pathOf(page)) {
+    return null;
+  }
+  // The Windows plugin turns contentEncoding into a Content-Encoding header, so
+  // the charset goes in the content type instead.
+  return WebResourceResponse(
+    contentType: 'text/html; charset=utf-8',
+    contentEncoding: '',
+    data: utf8.encode(data),
+  );
+}
 
 /// Turnstile view builder
 String buildHTML({
@@ -417,6 +449,7 @@ class _CloudflareTurnstileState extends State<CloudflareTurnstile> {
     disableDefaultErrorPage: true,
     disableContextMenu: true,
     disableLongPressContextMenuOnLinks: true,
+    useShouldInterceptRequest: _servesPageByInterception,
   );
 
   late String data;
@@ -536,10 +569,15 @@ class _CloudflareTurnstileState extends State<CloudflareTurnstile> {
   late final _view = InAppWebView(
     keepAlive: InAppWebViewKeepAlive(),
     key: webViewKey,
-    initialData: InAppWebViewInitialData(
-      data: data,
-      baseUrl: WebUri(widget.baseUrl),
-    ),
+    initialData: _servesPageByInterception
+        ? null
+        : InAppWebViewInitialData(data: data, baseUrl: WebUri(widget.baseUrl)),
+    initialUrlRequest: _servesPageByInterception
+        ? URLRequest(url: WebUri(widget.baseUrl))
+        : null,
+    shouldInterceptRequest: _servesPageByInterception
+        ? (_, request) => _pageForRequest(request, widget.baseUrl, data)
+        : null,
     initialSettings: _settings,
     onWebViewCreated: (controller) {
       _createChannels(controller);
@@ -732,10 +770,18 @@ class _TurnstileInvisible extends CloudflareTurnstile {
     );
 
     _view = HeadlessInAppWebView(
-      initialData: InAppWebViewInitialData(
-        data: data,
-        baseUrl: WebUri(baseUrl),
-      ),
+      initialData: _servesPageByInterception
+          ? null
+          : InAppWebViewInitialData(data: data, baseUrl: WebUri(baseUrl)),
+      initialUrlRequest: _servesPageByInterception
+          ? URLRequest(url: WebUri(baseUrl))
+          : null,
+      initialSettings: _servesPageByInterception
+          ? InAppWebViewSettings(useShouldInterceptRequest: true)
+          : null,
+      shouldInterceptRequest: _servesPageByInterception
+          ? (_, request) => _pageForRequest(request, baseUrl, data)
+          : null,
       onWebViewCreated: (wController) {
         controller?.setConnector(wController);
         _createChannels(wController);
@@ -876,6 +922,13 @@ class _TurnstileInvisible extends CloudflareTurnstile {
   @override
   Future<void> dispose() async {
     _scriptLoadTimer?.cancel();
+    // flutter_inappwebview_windows answers the JavaScript handler call that
+    // delivered the token on the webview itself, and crashes the app when the
+    // webview is gone by then. Its reply is already queued, so a short wait
+    // lets it land first.
+    if (Platform.isWindows) {
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    }
     await _view.dispose();
   }
 }
