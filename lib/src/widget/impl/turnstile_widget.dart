@@ -665,7 +665,15 @@ class _CloudflareTurnstileState extends State<CloudflareTurnstile> {
   void dispose() {
     super.dispose();
     _scriptLoadTimer?.cancel();
-    InAppWebViewController.disposeKeepAlive(_keepAlive).ignore();
+    _disposeKeepAlive().ignore();
+  }
+
+  /// Frees the native webview, after the same Windows wait as [_TurnstileInvisible.dispose].
+  Future<void> _disposeKeepAlive() async {
+    if (Platform.isWindows) {
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    }
+    await InAppWebViewController.disposeKeepAlive(_keepAlive);
   }
 
   @override
