@@ -1,3 +1,8 @@
+## 3.8.1
+* Fixed the visible widget never disposing its `InAppWebViewKeepAlive`, which leaked a native WebView per widget (upstream #56). On Windows the release waits for the token reply, like the invisible widget's `dispose()`.
+* Added `hardwareAcceleration` to `TurnstileOptions` to disable WebView hardware acceleration on Android (upstream #54). Upstream's CSP meta tag and `sharedCookiesEnabled` from the same change were left out.
+* Upstream's switch to `zikzak_inappwebview` was deliberately not taken; this fork stays on `flutter_inappwebview`.
+
 ## 3.8.0
 * Merged the 3.6.x web-implementation rewrite (3.6.3) and mobile network-error logging (3.6.6) with the upstream 3.7.x changes (immutable `TurnstileOptions`, centralized validation, decoupled controller, non-main-frame error filtering).
 
