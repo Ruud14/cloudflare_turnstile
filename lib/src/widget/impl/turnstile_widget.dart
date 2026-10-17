@@ -436,7 +436,7 @@ class _CloudflareTurnstileState extends State<CloudflareTurnstile> {
   final GlobalKey webViewKey = GlobalKey();
   late TurnstileTheme _resolvedTheme;
 
-  final InAppWebViewSettings _settings = InAppWebViewSettings(
+  late final InAppWebViewSettings _settings = InAppWebViewSettings(
     /// Disbling caching for this webview instance
     cacheMode: CacheMode.LOAD_NO_CACHE,
     disableHorizontalScroll: true,
@@ -450,6 +450,7 @@ class _CloudflareTurnstileState extends State<CloudflareTurnstile> {
     disableContextMenu: true,
     disableLongPressContextMenuOnLinks: true,
     useShouldInterceptRequest: _servesPageByInterception,
+    hardwareAcceleration: widget.options.hardwareAcceleration,
   );
 
   late String data;
@@ -787,9 +788,10 @@ class _TurnstileInvisible extends CloudflareTurnstile {
       initialUrlRequest: _servesPageByInterception
           ? URLRequest(url: WebUri(baseUrl))
           : null,
-      initialSettings: _servesPageByInterception
-          ? InAppWebViewSettings(useShouldInterceptRequest: true)
-          : null,
+      initialSettings: InAppWebViewSettings(
+        useShouldInterceptRequest: _servesPageByInterception,
+        hardwareAcceleration: options.hardwareAcceleration,
+      ),
       shouldInterceptRequest: _servesPageByInterception
           ? (_, request) => _pageForRequest(request, baseUrl, data)
           : null,
